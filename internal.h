@@ -196,6 +196,19 @@ static inline bool ethtool_link_mode_is_empty(const u32 *mask)
 	return true;
 }
 
+static inline bool ethtool_link_mode_is_equal(const u32 *mask1, const u32 *mask2)
+{
+	unsigned int i;
+
+	ethtool_link_mode_for_each_u32(i) {
+		if (mask1[i] != mask2[i])
+			return false;
+	}
+
+	return true;
+}
+
+
 static inline void ethtool_link_mode_copy(u32 *dst, const u32 *src)
 {
 	memcpy(dst, src, ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NBYTES);

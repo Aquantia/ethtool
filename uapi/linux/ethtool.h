@@ -379,6 +379,25 @@ struct ethtool_eee {
 	__u32	reserved[2];
 };
 
+/* same as ethtool_eee but without using legacy Supported/Advertised u32 mask */
+
+struct ethtool_eee_ext {
+	__u32	cmd;
+	__u32	eee_active;
+	__u32	eee_enabled;
+	__u32	tx_lpi_enabled;
+	__u32	tx_lpi_timer;
+	__s8	link_mode_masks_nwords;
+	__u32	reserved2[2];
+	__u32	link_mode_masks[0];
+	/* layout of link_mode_masks fields:
+	 * __u32 map_supported[link_mode_masks_nwords];
+	 * __u32 map_advertising[link_mode_masks_nwords];
+	 * __u32 map_lp_advertising[link_mode_masks_nwords];
+	 */
+};
+
+
 /**
  * struct ethtool_modinfo - plugin module eeprom information
  * @cmd: %ETHTOOL_GMODULEINFO
@@ -1582,6 +1601,9 @@ enum ethtool_fec_config_bits {
 #define ETHTOOL_PHY_STUNABLE	0x0000004f /* Set PHY tunable configuration */
 #define ETHTOOL_GFECPARAM	0x00000050 /* Get FEC settings */
 #define ETHTOOL_SFECPARAM	0x00000051 /* Set FEC settings */
+
+#define ETHTOOL_GEEE_EXT		0x00000052 /* Get EEE settings */
+#define ETHTOOL_SEEE_EXT		0x00000053 /* Set EEE settings */
 
 /* compatibility with older code */
 #define SPARC_ETH_GSET		ETHTOOL_GSET

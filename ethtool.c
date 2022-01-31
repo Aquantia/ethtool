@@ -4946,6 +4946,119 @@ static int do_geee(struct cmd_context *ctx)
 	return 0;
 }
 
+struct ethtool_eee_ext_data {
+	struct ethtool_eee_ext req;
+	__u32 link_mode_data[3 * ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NU32];
+};
+
+
+static int get_eee_data(struct cmd_context *ctx, struct ethtool_eee_ext_data *ecmd)
+{
+	int err;
+	/* Handshake with kernel to determine number of words for link
+	 * mode bitmaps. When requested number of bitmap words is not
+	 * the one expected by kernel, the latter returns the integer
+	 * opposite of what it is expecting. We request length 0 below
+	 * (aka. invalid bitmap length) to get this info.
+	 */
+	memset(ecmd, 0, sizeof(*ecmd));
+	ecmd->req.cmd = ETHTOOL_GEEE_EXT;
+	err = send_ioctl(ctx, ecmd);
+	if (err < 0) {
+		return 1;
+	}
+
+	/* see above: we expect a strictly negative value from kernel.
+	 */
+	if (ecmd->req.link_mode_masks_nwords >= 0
+	    || ecmd->req.cmd != ETHTOOL_GEEE_EXT) {
+		return 1;
+	}
+
+	/* got the real ecmd.req.link_mode_masks_nwords,
+	 * now send the real request
+	 */
+
+	ecmd->req.cmd = ETHTOOL_GEEE_EXT;
+	ecmd->req.link_mode_masks_nwords =- ecmd->req.link_mode_masks_nwords;
+	err = send_ioctl(ctx, ecmd);
+	if (err < 0) {
+		return 1;
+	}
+
+	if (ecmd->req.link_mode_masks_nwords <= 0
+	    || ecmd->req.cmd != ETHTOOL_GEEE_EXT) {
+		return 1;
+	}
+
+	return 0;
+}
+
+static int do_geee_ext(struct cmd_context *ctx)
+{
+	struct ethtool_eee_ext_data ecmd;
+
+	struct {
+		ETHTOOL_DECLARE_LINK_MODE_MASK(supported);
+		ETHTOOL_DECLARE_LINK_MODE_MASK(advertising);
+		ETHTOOL_DECLARE_LINK_MODE_MASK(lp_advertising);
+	} link_modes;
+
+	unsigned int u32_offs;
+
+	if (ctx->argc != 0)
+		exit_bad_args();
+
+	memset(&link_modes, 0, sizeof(link_modes));
+
+	if (get_eee_data(ctx, &ecmd))
+		return 1;
+
+	/* copy link mode bitmaps */
+	u32_offs = 0;
+	memcpy(link_modes.supported,
+	       &ecmd.link_mode_data[u32_offs],
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	u32_offs += ecmd.req.link_mode_masks_nwords;
+	memcpy(link_modes.advertising,
+	       &ecmd.link_mode_data[u32_offs],
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	u32_offs += ecmd.req.link_mode_masks_nwords;
+	memcpy(link_modes.lp_advertising,
+	       &ecmd.link_mode_data[u32_offs],
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	fprintf(stdout, "EEE Settings for %s:\n", ctx->devname);
+	fprintf(stdout, "	EEE status: ");
+
+	if (ethtool_link_mode_is_empty(link_modes.supported)) {
+		fprintf(stdout, "not supported\n");
+		return 0;
+	} else if (!ecmd.req.eee_enabled) {
+		fprintf(stdout, "disabled\n");
+	} else {
+		fprintf(stdout, "enabled - ");
+		if (ecmd.req.eee_active)
+			fprintf(stdout, "active\n");
+		else
+			fprintf(stdout, "inactive\n");
+	}
+
+	fprintf(stdout, "	Tx LPI:");
+	if (ecmd.req.tx_lpi_enabled)
+		fprintf(stdout, " %d (us)\n", ecmd.req.tx_lpi_timer);
+	else
+		fprintf(stdout, " disabled\n");
+
+	dump_link_caps("Supported EEE", "", link_modes.supported, 1);
+	dump_link_caps("Advertised EEE", "", link_modes.advertising, 1);
+	dump_link_caps("Link partner advertised EEE", "", link_modes.lp_advertising, 1);
+
+	return 0;
+}
+
 static int do_seee(struct cmd_context *ctx)
 {
 	int adv_c = -1, lpi_c = -1, lpi_time_c = -1, eee_c = -1;
@@ -4995,6 +5108,101 @@ static int do_seee(struct cmd_context *ctx)
 	if (change2) {
 		eeecmd.cmd = ETHTOOL_SEEE;
 		if (send_ioctl(ctx, &eeecmd)) {
+			perror("Cannot set EEE settings");
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static int do_seee_ext(struct cmd_context *ctx)
+{
+	u32 lpi_c, lpi_time_c, eee_c;
+	bool eee_need_change = false;
+	ETHTOOL_DECLARE_LINK_MODE_MASK(link_mode_advertise_old);
+	ETHTOOL_DECLARE_LINK_MODE_MASK(link_mode_advertise_new);
+	unsigned int argc = ctx->argc;
+	char **argp = ctx->argp;
+	unsigned int i;
+
+	struct ethtool_eee_ext_data ecmd;
+
+	if (get_eee_data(ctx, &ecmd))
+		return 1;
+
+	/* copy link mode bitmaps */
+	memcpy(link_mode_advertise_old,
+	       &ecmd.link_mode_data[ecmd.req.link_mode_masks_nwords], /* offset to advertise field */
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	for (i = 0; i < argc; i++) {
+		if (!strcmp(argp[i], "tx-timer")) {
+			i += 1;
+			if (i >= argc)
+				exit_bad_args();
+			lpi_time_c = get_int(argp[i], 10);
+
+			if (ecmd.req.tx_lpi_timer != lpi_time_c) {
+				ecmd.req.tx_lpi_timer = lpi_time_c;
+				eee_need_change = true;
+			}
+		} else if (!strcmp(argp[i], "tx-lpi")) {
+			i += 1;
+			if (i >= argc)
+				exit_bad_args();
+			if (!strcmp(argp[i], "on")) {
+				lpi_c = 1;
+			} else if (!strcmp(argp[i], "off")) {
+				lpi_c = 0;
+			} else {
+				exit_bad_args();
+			}
+
+			if (ecmd.req.tx_lpi_enabled != lpi_c) {
+				ecmd.req.tx_lpi_enabled = lpi_c;
+				eee_need_change = true;
+			}
+		} else if (!strcmp(argp[i], "eee")) {
+			i += 1;
+			if (i >= argc)
+				exit_bad_args();
+			if (!strcmp(argp[i], "on")) {
+				eee_c = 1;
+			} else if (!strcmp(argp[i], "off")) {
+				eee_c = 0;
+			} else {
+				exit_bad_args();
+			}
+
+			if (ecmd.req.eee_enabled != eee_c) {
+				ecmd.req.eee_enabled = eee_c;
+				eee_need_change = true;
+			}
+		} else if (!strcmp(argp[i], "advertise")) {
+			i += 1;
+			if (i >= argc)
+				exit_bad_args();
+			if (parse_hex_u32_bitmap(
+				    argp[i],
+				    ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NBITS,
+				    link_mode_advertise_new))
+				exit_bad_args();
+
+			if (!ethtool_link_mode_is_equal(link_mode_advertise_old, link_mode_advertise_new)) {
+				/* copy link mode bitmaps */
+				memcpy(&ecmd.link_mode_data[ecmd.req.link_mode_masks_nwords], /* offset to advertise field */
+					link_mode_advertise_new,
+					4 * ecmd.req.link_mode_masks_nwords);
+
+				eee_need_change = true;
+			}
+		}
+	}
+
+	if (eee_need_change) {
+		ecmd.req.cmd = ETHTOOL_SEEE_EXT;
+		if (send_ioctl(ctx, &ecmd)) {
 			perror("Cannot set EEE settings");
 			return 1;
 		}
@@ -5931,13 +6139,13 @@ static const struct option args[] = {
 	},
 	{
 		.opts	= "--show-eee",
-		.func	= do_geee,
+		.func	= do_geee_ext,
 		.nlfunc	= nl_geee,
 		.help	= "Show EEE settings",
 	},
 	{
 		.opts	= "--set-eee",
-		.func	= do_seee,
+		.func	= do_seee_ext,
 		.nlfunc	= nl_seee,
 		.help	= "Set EEE settings",
 		.xhelp	= "		[ eee on|off ]\n"
